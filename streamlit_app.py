@@ -1,54 +1,88 @@
+"""Streamlit application for COVID-19 chest X-ray classification."""
+
+from __future__ import annotations
+
+from pathlib import Path
+from typing import Tuple
+
+import pandas as pd
 import streamlit as st
 import torch
 from PIL import Image
-from torchvision import transforms
-from covid_classification import RadiographyCNN
 
-# Page config must be the FIRST Streamlit command
+from covid_xray.inference import (
+    CLASS_NAMES,
+    build_inference_transform,
+    load_trained_model,
+    predict_image,
+)
+
+BEST_MODEL_PATH = Path("best_model.pth")
+
 st.set_page_config(page_title="COVID-19 X-ray Classifier", layout="centered")
 
-# Define transform (must match training)
-transform = transforms.Compose([
-    transforms.Resize((256, 256)),
-    transforms.CenterCrop(224),
-    transforms.Grayscale(num_output_channels=1),
-    transforms.ToTensor(),
-    transforms.Normalize((0.5,), (0.5,))
-])
 
-# Load model (CPU-only for Streamlit)
 @st.cache_resource
-def load_model():
-    model = RadiographyCNN()
-    model.load_state_dict(torch.load(
-        "best_model.pth",
-        map_location="cpu",
-        weights_only=True
-    ))
-    model.eval()
-    return model
+def load_cached_model() -> Tuple[torch.nn.Module, torch.device]:
+    """Load the pretrained model and cache it for reuse.
 
-model = load_model()
-class_mapping = {0: "COVID-negative", 1: "COVID-positive"}
+    Returns:
+        Tuple containing the pretrained model and associated device.
+    """
 
-# App layout
-st.title("COVID-19 Chest X-ray Classifier")
-st.markdown("Upload a chest X-ray image (JPG or PNG) to classify it as **COVID-positive** or **COVID-negative**.")
+    model, device = load_trained_model(BEST_MODEL_PATH)
+    return model, device
 
-uploaded = st.file_uploader("Choose an X-ray image", type=["jpg", "jpeg", "png"])
 
-if uploaded:
-    image = Image.open(uploaded).convert("RGB")
+def main() -> None:
+    """Render the Streamlit user interface."""
+
+    st.title("COVID-19 Chest X-ray Classifier")
+    st.write(
+        "Upload a chest X-ray image to receive a COVID-positive or COVID-negative "
+        "prediction along with class probabilities."
+    )
+
+    if not BEST_MODEL_PATH.exists():
+        st.error(
+            "Model weights were not found. Ensure `best_model.pth` is located in the "
+            "project root before launching the app."
+        )
+        return
+
+    model, device = load_cached_model()
+    transform = build_inference_transform()
+
+    uploader = st.file_uploader(
+        "Upload an X-ray image", type=["jpg", "jpeg", "png"], accept_multiple_files=False
+    )
+    if uploader is None:
+        st.info("Awaiting image upload.")
+        return
+
+    image = Image.open(uploader).convert("RGB")
     st.image(image, caption="Uploaded image", use_container_width=True)
 
-    with st.spinner("Classifying..."):
-        x = transform(image).unsqueeze(0)
-        with torch.no_grad():
-            logits = model(x)
-            probs = torch.softmax(logits, dim=1)[0]
-            pred_idx = probs.argmax().item()
-            label = class_mapping[pred_idx]
-            confidence = probs[pred_idx].item() * 100
+    with st.spinner("Running inference..."):
+        label, confidence, probabilities = predict_image(
+            image_input=image,
+            model=model,
+            device=device,
+            transform=transform,
+        )
 
-    st.success(f"**Prediction:** {label}")
-    st.metric(label="Confidence", value=f"{confidence:.2f}%")
+    st.success(f"Prediction: {label}")
+    st.metric(label="Confidence", value=f"{confidence * 100:.2f}%")
+
+    probability_df = pd.DataFrame(
+        {
+            "Class": list(CLASS_NAMES),
+            "Probability": [value * 100 for value in probabilities.tolist()],
+        }
+    )
+    probability_df.set_index("Class", inplace=True)
+    st.bar_chart(probability_df)
+
+
+if __name__ == "__main__":
+    main()

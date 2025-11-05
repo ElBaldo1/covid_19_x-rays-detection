@@ -7,10 +7,14 @@ dependencies:
   - pip
   - numpy
   - pandas
+  - pillow
   - matplotlib
   - seaborn
   - scikit-learn
-  - torchvision
   - pytorch
+  - torchvision
   - torchaudio
   - streamlit
+  - pip:
+      - pytest
+      - flake8
