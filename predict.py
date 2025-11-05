@@ -1,54 +1,117 @@
-#!/usr/bin/env python
-import time, psutil, platform, torch, glob, os
-from PIL import Image
-from torchvision import transforms
-from covid_classification import RadiographyCNN
+"""Command-line interface for running COVID-19 chest X-ray inference."""
 
-def predict_one(path, model, transform):
-    img = Image.open(path).convert("RGB")
-    x   = transform(img).unsqueeze(0)
-    t0  = time.perf_counter()
-    with torch.no_grad():
-        logits = model(x)
-    dt = (time.perf_counter() - t0) * 1000  # milliseconds
-    prob  = torch.softmax(logits, 1)[0]
-    label = "COVID-positive" if prob[1] > prob[0] else "COVID-negative"
-    conf  = prob.max().item() * 100
-    return label, conf, dt
+from __future__ import annotations
 
-# System information
-print("System:", platform.platform())
-print("CPU:", platform.processor() or "Apple M1")
-print(f"RAM: {psutil.virtual_memory().total/2**30:.1f} GB")
-print("-" * 50)
+import argparse
+import logging
+from pathlib import Path
+from typing import Iterable, List
 
-# Image preprocessing pipeline
-transform = transforms.Compose([
-    transforms.Resize((256, 256)),
-    transforms.CenterCrop(224),
-    transforms.Grayscale(1),
-    transforms.ToTensor(),
-    transforms.Normalize((0.5,), (0.5,))
-])
+import torch
 
-# Load model
-model = RadiographyCNN()
-model.load_state_dict(
-    torch.load("best_model.pth", map_location="cpu", weights_only=True)
+from covid_xray.inference import (
+    build_inference_transform,
+    load_trained_model,
+    predict_image,
 )
-model.eval()
-print("Model loaded successfully.\n")
 
-# Locate images
-images = sorted(glob.glob("COVID-Data-Radiography/manual-test/*.png"))
+LOGGER = logging.getLogger(__name__)
+SUPPORTED_EXTENSIONS = (".png", ".jpg", ".jpeg")
 
-if not images:
-    print("No PNG images found in COVID-Data-Radiography/manual-test/. Exiting.")
-    exit()
 
-print(f"Found {len(images)} images for inference.\n")
+def parse_args() -> argparse.Namespace:
+    """Parse command-line arguments for the inference script.
 
-# Inference loop
-for path in images:
-    label, conf, ms = predict_one(path, model, transform)
-    print(f"{os.path.basename(path):30}  →  {label:15}  ({conf:.2f} %)   [{ms:.1f} ms]")
+    Returns:
+        Parsed command-line arguments namespace.
+    """
+
+    parser = argparse.ArgumentParser(
+        description=(
+            "Run inference on chest X-ray images using a pretrained RadiographyCNN "
+            "model."
+        )
+    )
+    parser.add_argument(
+        "paths",
+        nargs="+",
+        type=Path,
+        help="Image files or directories containing images for prediction.",
+    )
+    parser.add_argument(
+        "--weights",
+        type=Path,
+        default=Path("best_model.pth"),
+        help="Path to the trained model weights file.",
+    )
+    parser.add_argument(
+        "--device",
+        type=str,
+        default=None,
+        help="Optional device override (e.g. 'cpu', 'cuda').",
+    )
+    return parser.parse_args()
+
+
+def discover_images(paths: Iterable[Path]) -> List[Path]:
+    """Discover image files under the provided paths.
+
+    Args:
+        paths: Iterable of files or directories supplied by the user.
+
+    Returns:
+        Sorted list of valid image file paths.
+    """
+
+    discovered: List[Path] = []
+    for path in paths:
+        if path.is_dir():
+            for extension in SUPPORTED_EXTENSIONS:
+                discovered.extend(sorted(path.glob(f"**/*{extension}")))
+        elif path.is_file() and path.suffix.lower() in SUPPORTED_EXTENSIONS:
+            discovered.append(path)
+        else:
+            LOGGER.warning("Skipping unsupported path: %s", path)
+    return discovered
+
+
+def main() -> None:
+    """Entry point for the inference script."""
+
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
+    )
+    args = parse_args()
+
+    device = None
+    if args.device:
+        device = torch.device(args.device)
+
+    model, device = load_trained_model(args.weights, device=device)
+    transform = build_inference_transform()
+
+    images = discover_images(args.paths)
+    if not images:
+        LOGGER.error("No valid images found under the provided paths.")
+        raise SystemExit(1)
+
+    LOGGER.info("Running inference on %d image(s).", len(images))
+    for image_path in images:
+        label, confidence, probabilities = predict_image(
+            image_input=image_path,
+            model=model,
+            device=device,
+            transform=transform,
+        )
+        LOGGER.info(
+            "%s -> %s (confidence: %.2f%% | probs: %s)",
+            image_path.name,
+            label,
+            confidence * 100,
+            ", ".join(f"{value:.3f}" for value in probabilities.tolist()),
+        )
+
+
+if __name__ == "__main__":
+    main()

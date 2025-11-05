@@ -1,28 +1,35 @@
-# Ignore image files
-*.png
-*.jpg
-*.jpeg
-*.gif
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+*$py.class
 
-# Ignore IDE config (JetBrains/PyCharm)
+# Distribution / packaging
+dist/
+build/
+*.egg-info/
+
+# Virtual environments
+.venv/
+.env/
+
+# IDE settings
+.vscode/
 .idea/
 
+# Testing
+.pytest_cache/
+.coverage
+htmlcov/
 
-# Ignore the entire dataset directory and model file
-COVID-Data-Radiography/
-COVID-Data-Radiography.zip
-best_model.pth
-
-# Ignore logs and TensorBoard
-*.log
-runs/
-
-# Ignore outputs and training logs
+# Data and artifacts
 outputs/
-training_log.csv
+best_model.pth
+COVID-Data-Radiography/
+manual-test/
 
-# Ignore system/IDE cache files
+# OS files
 .DS_Store
-__pycache__/
-.ipynb_checkpoints/
-.env
+Thumbs.db
+
+# Streamlit cache
+.streamlit/
